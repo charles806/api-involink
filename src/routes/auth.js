@@ -84,6 +84,9 @@ router.post('/signup', async (req, res) => {
         email: newUser.email,
         name: newUser.name,
         business_name: newUser.business_name || null,
+        subscription_plan: 'free',
+        subscription_status: 'active',
+        subscription_expires_at: null,
       },
       token
     });
@@ -134,6 +137,9 @@ router.post('/login', async (req, res) => {
         email: user.email,
         name: user.name,
         business_name: user.business_name || null,
+        subscription_plan: user.subscription_plan || 'free',
+        subscription_status: user.subscription_status || 'active',
+        subscription_expires_at: user.subscription_expires_at || null,
       },
       token
     });
@@ -156,7 +162,7 @@ router.get('/me', async (req, res) => {
 
     const { data: user, error } = await supabaseAdmin
       .from('users')
-      .select('id, email, name, business_name, bank_name, account_number, account_name, logo_url')
+      .select('id, email, name, business_name, bank_name, account_number, account_name, logo_url, subscription_plan, subscription_status, subscription_expires_at')
       .eq('id', decoded.userId)
       .single();
 
@@ -199,7 +205,7 @@ router.put('/profile', async (req, res) => {
       .from('users')
       .update(updateData)
       .eq('id', decoded.userId)
-      .select('id, email, name, business_name, bank_name, account_number, account_name, logo_url')
+      .select('id, email, name, business_name, bank_name, account_number, account_name, logo_url, subscription_plan, subscription_status, subscription_expires_at')
       .single();
 
     if (error) throw error;

@@ -147,6 +147,40 @@ router.post('/', async (req, res) => {
       return res.status(400).json({ error: 'Invalid client' });
     }
 
+    // CHECK SUBSCRIPTION LIMITS
+    const { data: userRecord } = await supabaseAdmin
+      .from('users')
+      .select('subscription_plan, subscription_expires_at')
+      .eq('id', req.user.userId)
+      .single();
+
+    let isFree = true;
+    if (userRecord && userRecord.subscription_plan === 'enterprise') {
+      if (!userRecord.subscription_expires_at || new Date(userRecord.subscription_expires_at) > new Date()) {
+        isFree = false;
+      }
+    }
+
+    if (isFree) {
+      // Check invoice count
+      const { count, error: countError } = await supabaseAdmin
+        .from('invoices')
+        .select('*', { count: 'exact', head: true })
+        .eq('user_id', req.user.userId);
+
+      if (countError) {
+        console.error('Count error:', countError);
+        return res.status(500).json({ error: 'Failed to verify account limits' });
+      }
+
+      if (count >= 10) {
+        return res.status(403).json({ 
+          error: 'Free plan limit reached. Please upgrade to Enterprise.',
+          code: 'LIMIT_REACHED'
+        });
+      }
+    }
+
     // Generate invoice number if not provided
     let finalInvoiceNumber;
     if (!invoice_number || !invoice_number.trim()) {
