@@ -1,20 +1,20 @@
-const express = require('express');
-const crypto = require('crypto');
-const { supabaseAdmin } = require('../lib/supabase');
+import { Router, raw } from 'express';
+import { createHmac } from 'crypto';
+import { supabaseAdmin } from "../lib/supabase.js";
 
-const router = express.Router();
+const router = Router();
 
 // Paystack webhook endpoint
 // Requires express.raw or express.json middleware before this route if we need raw body,
 // but since we are using express.json() globally, we can use req.body as long as we also 
 // have the raw body. However, to verify the signature properly, we need the raw payload.
 // Since index.js mounts this BEFORE express.json(), we need to parse it using express.raw() here.
-router.post('/paystack', express.raw({ type: 'application/json' }), async (req, res) => {
+router.post('/paystack', raw({ type: 'application/json' }), async (req, res) => {
   try {
     const secret = process.env.PAYSTACK_WEBHOOK_SECRET || process.env.PAYSTACK_SECRET_KEY;
     
     // Validate event
-    const hash = crypto.createHmac('sha512', secret).update(req.body).digest('hex');
+    const hash = createHmac('sha512', secret).update(req.body).digest('hex');
     
     if (hash !== req.headers['x-paystack-signature']) {
       console.warn('Invalid Paystack webhook signature');
@@ -58,4 +58,4 @@ router.post('/paystack', express.raw({ type: 'application/json' }), async (req, 
   }
 });
 
-module.exports = router;
+export default router;

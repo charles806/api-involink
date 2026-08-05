@@ -1,60 +1,69 @@
-require('dotenv').config();
-const express = require('express');
-const cors = require('cors');
-const authRoutes = require('./routes/auth');
-const clientRoutes = require('./routes/clients');
-const invoiceRoutes = require('./routes/invoices');
-const paymentRoutes = require('./routes/payments');
-const webhookRoutes = require('./routes/webhooks');
+import express, { json, urlencoded } from "express";
+import dotenv from "dotenv";
+import cors from "cors";
+import authRoutes from "./routes/auth.js";
+import clientRoutes from "./routes/clients.js";
+import invoiceRoutes from "./routes/invoices.js";
+import paymentRoutes from "./routes/payments.js";
+import settingsRoutes from "./routes/settings.js";
+import webhookRoutes from "./routes/webhooks.js";
+
+dotenv.config();
 
 const app = express();
-const PORT = process.env.PORT || 3001;
+const PORT = process.env.PORT;
 
 // CORS — restrict in production
-const allowedOrigins = process.env.FRONTEND_URL
-  ? process.env.FRONTEND_URL.split(',').map(u => u.trim())
-  : ['http://localhost:5173', 'http://localhost:3000'];
+const allowedOrigins = (process.env.FRONTEND_URL || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean);
 
-app.use(cors({
-  origin: (origin, callback) => {
-    // Allow requests with no origin (curl, mobile apps, etc.)
-    if (!origin || allowedOrigins.includes(origin)) {
-      callback(null, true);
-    } else {
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-}));
+app.use(
+  cors({
+    origin: (origin, callback) => {
+      // Allow requests with no origin (curl, mobile apps, etc.)
+      if (!origin || allowedOrigins.includes(origin)) {
+        callback(null, true);
+      } else {
+        callback(new Error("Not allowed by CORS"));
+      }
+    },
+    credentials: true,
+  }),
+);
 
 // Webhook route MUST come before express.json() — Paystack sends raw body
-app.use('/api/webhooks', webhookRoutes);
+app.use("/api/webhooks", webhookRoutes);
 
 // Body parsing with size limits
-app.use(express.json({ limit: '10kb' }));
-app.use(express.urlencoded({ extended: true, limit: '10kb' }));
+app.use(json({ limit: "10kb" }));
+app.use(urlencoded({ extended: true, limit: "10kb" }));
 
 // Simple request logging
 app.use((req, res, next) => {
   const start = Date.now();
-  res.on('finish', () => {
+  res.on("finish", () => {
     const duration = Date.now() - start;
-    if (req.path !== '/api/health') {
+    if (req.path !== "/api/health") {
       console.log(`${req.method} ${req.path} ${res.statusCode} ${duration}ms`);
     }
   });
   next();
 });
-
+app.get("/", (req, res) => {
+  res.json({ message: "Wagwan", timestamp: new Date().toISOString() });
+});
 // Routes
-app.use('/api/auth', authRoutes);
-app.use('/api/clients', clientRoutes);
-app.use('/api/invoices', invoiceRoutes);
-app.use('/api/payments', paymentRoutes);
+app.use("/api/auth", authRoutes);
+app.use("/api/clients", clientRoutes);
+app.use("/api/invoices", invoiceRoutes);
+app.use("/api/payments", paymentRoutes);
+app.use("/api/settings", settingsRoutes);
 
 // Health check
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', timestamp: new Date().toISOString() });
+app.get("/api/health", (req, res) => {
+  res.json({ status: "ok", timestamp: new Date().toISOString() });
 });
 
 // 404 handler for unknown routes
@@ -64,40 +73,44 @@ app.use((req, res) => {
 
 // Global error handler
 app.use((err, req, res, next) => {
-  console.error('Unhandled error:', err.message || err);
-  
-  if (err.message === 'Not allowed by CORS') {
-    return res.status(403).json({ error: 'CORS: Origin not allowed' });
+  console.error("Unhandled error:", err.message || err);
+
+  if (err.message === "Not allowed by CORS") {
+    return res.status(403).json({ error: "CORS: Origin not allowed" });
   }
 
   // JSON parse errors
-  if (err.type === 'entity.parse.failed') {
-    return res.status(400).json({ error: 'Invalid JSON in request body' });
+  if (err.type === "entity.parse.failed") {
+    return res.status(400).json({ error: "Invalid JSON in request body" });
   }
 
   // Body too large
-  if (err.type === 'entity.too.large') {
-    return res.status(413).json({ error: 'Request body too large' });
+  if (err.type === "entity.too.large") {
+    return res.status(413).json({ error: "Request body too large" });
   }
 
-  res.status(500).json({ error: 'Internal server error' });
+  res.status(500).json({ error: "Internal server error" });
 });
 
 // Graceful shutdown
-process.on('unhandledRejection', (reason) => {
-  console.error('Unhandled Rejection:', reason);
+process.on("unhandledRejection", (reason) => {
+  console.error("Unhandled Rejection:", reason);
 });
 
-process.on('uncaughtException', (err) => {
-  console.error('Uncaught Exception:', err);
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught Exception:", err);
   process.exit(1);
 });
 
 // Only listen in local development, export for Vercel serverless
-if (process.env.NODE_ENV !== 'production' && !process.env.VERCEL) {
+if (
+  process.env.NODE_ENV !== "production" &&
+  process.env.NODE_ENV !== "test" &&
+  !process.env.VERCEL
+) {
   app.listen(PORT, () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
 }
 
-module.exports = app;
+export default app;

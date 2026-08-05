@@ -1,8 +1,8 @@
-const express = require('express');
-const { supabaseAdmin } = require('../lib/supabase');
-const { authenticateToken } = require('../middleware/auth');
+import { Router } from "express";
+import { supabaseAdmin } from "../lib/supabase.js";
+import { authenticateToken } from "../middleware/auth.js";
 
-const router = express.Router();
+const router = Router();
 
 router.use(authenticateToken);
 
@@ -128,6 +128,20 @@ router.delete('/:id', async (req, res) => {
       return res.status(404).json({ error: 'Client not found' });
     }
 
+    // Check if the client has invoices — do not allow deletion if so
+    const { count, error: invoiceError } = await supabaseAdmin
+      .from('invoices')
+      .select('*', { count: 'exact', head: true })
+      .eq('client_id', id);
+
+    if (invoiceError) throw invoiceError;
+
+    if (count !== null && count > 0) {
+      return res.status(409).json({
+        error: 'This client has invoices and cannot be deleted.'
+      });
+    }
+
     const { error } = await supabaseAdmin
       .from('clients')
       .delete()
@@ -142,4 +156,4 @@ router.delete('/:id', async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

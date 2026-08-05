@@ -1,52 +1,63 @@
-const express = require('express');
-const { supabaseAdmin } = require('../lib/supabase');
-const { authenticateToken } = require('../middleware/auth');
+import { Router } from 'express';
+import { supabaseAdmin } from "../lib/supabase.js";
+import { authenticateToken } from "../middleware/auth.js";
+import { calculateInvoiceTotals, validateItems, nextInvoiceNumber } from '../lib/invoiceMath.js';
 
-const router = express.Router();
+const router = Router();
 
-// --- Helpers ---
+// PUBLIC: Get invoice for payment page (NO AUTH)
+// Must be registered BEFORE router.use(authenticateToken) so anyone with the
+// payment link can fetch the invoice without a token.
+router.get('/:id/public', async (req, res) => {
+  try {
+    const { id } = req.params;
 
-function calculateInvoiceTotals(items, vatEnabled, taxRate) {
-  const subtotal = items.reduce((sum, item) => {
-    const qty = parseFloat(item.quantity) || 0;
-    const rate = parseFloat(item.rate) || 0;
-    const discount = parseFloat(item.discount) || 0;
-    const lineTotal = qty * rate;
-    const afterDiscount = lineTotal - (lineTotal * (discount / 100));
-    return sum + afterDiscount;
-  }, 0);
-  
-  const vat = vatEnabled ? subtotal * (parseFloat(taxRate) || 0.075) : 0;
-  const total = subtotal + vat;
-  
-  return {
-    subtotal: Math.round(subtotal * 100) / 100,
-    vat: Math.round(vat * 100) / 100,
-    total: Math.round(total * 100) / 100,
-  };
-}
+    const { data: invoice, error } = await supabaseAdmin
+      .from('invoices')
+      .select('id, invoice_number, subtotal, vat, total, status, due_date, issue_date, vat_enabled, clients(name, email, phone)')
+      .eq('id', id)
+      .single();
 
-function validateItems(items) {
-  if (!Array.isArray(items) || items.length === 0) {
-    return 'At least one line item is required';
+    if (error || !invoice) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    if (invoice.status === 'paid') {
+      return res.json({ ...invoice, already_paid: true });
+    }
+
+    const { data: items } = await supabaseAdmin
+      .from('invoice_items')
+      .select('description, quantity, rate, discount, unit')
+      .eq('invoice_id', id);
+
+    // Get the business owner info for branding
+    const { data: invoiceFull } = await supabaseAdmin
+      .from('invoices')
+      .select('user_id')
+      .eq('id', id)
+      .single();
+
+    let businessInfo = null;
+    if (invoiceFull) {
+      const { data: user } = await supabaseAdmin
+        .from('users')
+        .select('name, business_name, bank_name, account_number, account_name')
+        .eq('id', invoiceFull.user_id)
+        .single();
+      businessInfo = user;
+    }
+
+    res.json({
+      ...invoice,
+      items: items || [],
+      business: businessInfo,
+    });
+  } catch (err) {
+    console.error('Get public invoice error:', err);
+    res.status(500).json({ error: 'Failed to fetch invoice' });
   }
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
-    if (!item.description || typeof item.description !== 'string' || !item.description.trim()) {
-      return `Item ${i + 1}: description is required`;
-    }
-    if (item.quantity === undefined || item.quantity === null || parseFloat(item.quantity) <= 0) {
-      return `Item ${i + 1}: quantity must be greater than 0`;
-    }
-    if (item.rate === undefined || item.rate === null || parseFloat(item.rate) < 0) {
-      return `Item ${i + 1}: rate cannot be negative`;
-    }
-    if (item.discount !== undefined && (parseFloat(item.discount) < 0 || parseFloat(item.discount) > 100)) {
-      return `Item ${i + 1}: discount must be between 0 and 100`;
-    }
-  }
-  return null;
-}
+});
 
 // --- Protected routes ---
 
@@ -192,14 +203,7 @@ router.post('/', async (req, res) => {
         .limit(1)
         .single();
 
-      let nextNum = 1;
-      if (lastInvoice?.invoice_number) {
-        const match = lastInvoice.invoice_number.match(/(\d+)$/);
-        if (match) {
-          nextNum = parseInt(match[1]) + 1;
-        }
-      }
-      finalInvoiceNumber = `INV-${String(nextNum).padStart(4, '0')}`;
+      finalInvoiceNumber = nextInvoiceNumber(lastInvoice?.invoice_number);
     } else {
       finalInvoiceNumber = invoice_number.trim();
     }
@@ -454,57 +458,4 @@ router.post('/:id/mark-paid', async (req, res) => {
   }
 });
 
-// PUBLIC: Get invoice for payment page (NO AUTH)
-// This is mounted separately — see index.js
-router.get('/:id/public', async (req, res) => {
-  try {
-    const { id } = req.params;
-
-    const { data: invoice, error } = await supabaseAdmin
-      .from('invoices')
-      .select('id, invoice_number, subtotal, vat, total, status, due_date, issue_date, vat_enabled, clients(name, email, phone)')
-      .eq('id', id)
-      .single();
-
-    if (error || !invoice) {
-      return res.status(404).json({ error: 'Invoice not found' });
-    }
-
-    if (invoice.status === 'paid') {
-      return res.json({ ...invoice, already_paid: true });
-    }
-
-    const { data: items } = await supabaseAdmin
-      .from('invoice_items')
-      .select('description, quantity, rate, discount, unit')
-      .eq('invoice_id', id);
-
-    // Get the business owner info for branding
-    const { data: invoiceFull } = await supabaseAdmin
-      .from('invoices')
-      .select('user_id')
-      .eq('id', id)
-      .single();
-
-    let businessInfo = null;
-    if (invoiceFull) {
-      const { data: user } = await supabaseAdmin
-        .from('users')
-        .select('name, business_name, bank_name, account_number, account_name')
-        .eq('id', invoiceFull.user_id)
-        .single();
-      businessInfo = user;
-    }
-
-    res.json({
-      ...invoice,
-      items: items || [],
-      business: businessInfo,
-    });
-  } catch (err) {
-    console.error('Get public invoice error:', err);
-    res.status(500).json({ error: 'Failed to fetch invoice' });
-  }
-});
-
-module.exports = router;
+export default router;

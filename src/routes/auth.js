@@ -1,10 +1,13 @@
-const express = require('express');
-const bcrypt = require('bcryptjs');
-const jwt = require('jsonwebtoken');
-const { supabaseAdmin } = require('../lib/supabase');
-const nodemailer = require('nodemailer');
+import { Router } from 'express';
+import bcrypt from "bcryptjs";
+import jsonwebtoken from 'jsonwebtoken';
+import { supabaseAdmin } from '../lib/supabase.js';
+import { createTransport } from 'nodemailer';
 
-const transporter = nodemailer.createTransport({
+const { hash, compare } = bcrypt;
+const { sign, verify } = jsonwebtoken
+
+const transporter = createTransport({
   service: 'gmail',
   auth: {
     user: process.env.SMTP_USER,
@@ -12,7 +15,7 @@ const transporter = nodemailer.createTransport({
   }
 });
 
-const router = express.Router();
+const router = Router();
 
 // Validation helpers
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -57,7 +60,7 @@ router.post('/signup', async (req, res) => {
       return res.status(400).json({ error: 'Email already registered' });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 12);
+    const hashedPassword = await hash(password, 12);
 
     const { data: newUser, error } = await supabaseAdmin
       .from('users')
@@ -72,7 +75,7 @@ router.post('/signup', async (req, res) => {
 
     if (error) throw error;
 
-    const token = jwt.sign(
+    const token = sign(
       { userId: newUser.id, email: newUser.email },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
@@ -120,12 +123,12 @@ router.post('/login', async (req, res) => {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    const validPassword = await bcrypt.compare(password, user.password_hash);
+    const validPassword = await compare(password, user.password_hash);
     if (!validPassword) {
       return res.status(401).json({ error: 'Invalid email or password' });
     }
 
-    const token = jwt.sign(
+    const token = sign(
       { userId: user.id, email: user.email },
       process.env.JWT_SECRET,
       { expiresIn: '7d' }
@@ -158,11 +161,11 @@ router.get('/me', async (req, res) => {
       return res.status(401).json({ error: 'No token provided' });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = verify(token, process.env.JWT_SECRET);
 
     const { data: user, error } = await supabaseAdmin
       .from('users')
-      .select('id, email, name, business_name, bank_name, account_number, account_name, logo_url, subscription_plan, subscription_status, subscription_expires_at')
+      .select('id, email, name, business_name, business_address, phone, bank_name, account_number, account_name, logo_url, subscription_plan, subscription_status, subscription_expires_at')
       .eq('id', decoded.userId)
       .single();
 
@@ -189,12 +192,14 @@ router.put('/profile', async (req, res) => {
       return res.status(401).json({ error: 'No token provided' });
     }
 
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = verify(token, process.env.JWT_SECRET);
 
-    const { business_name, bank_name, account_number, account_name, name } = req.body;
+    const { business_name, business_address, phone, bank_name, account_number, account_name, name } = req.body;
 
     const updateData = {};
     if (business_name !== undefined) updateData.business_name = business_name;
+    if (business_address !== undefined) updateData.business_address = business_address;
+    if (phone !== undefined) updateData.phone = phone;
     if (bank_name !== undefined) updateData.bank_name = bank_name;
     if (account_number !== undefined) updateData.account_number = account_number;
     if (account_name !== undefined) updateData.account_name = account_name;
@@ -205,7 +210,7 @@ router.put('/profile', async (req, res) => {
       .from('users')
       .update(updateData)
       .eq('id', decoded.userId)
-      .select('id, email, name, business_name, bank_name, account_number, account_name, logo_url, subscription_plan, subscription_status, subscription_expires_at')
+      .select('id, email, name, business_name, business_address, phone, bank_name, account_number, account_name, logo_url, subscription_plan, subscription_status, subscription_expires_at')
       .single();
 
     if (error) throw error;
@@ -246,7 +251,7 @@ router.post('/forgot-password', async (req, res) => {
     // We embed the first 10 chars of the current password hash. 
     // If password changes, token becomes invalid.
     const hashPrefix = user.password_hash.substring(0, 10);
-    const token = jwt.sign(
+    const token = sign(
       { userId: user.id, hashPrefix },
       process.env.JWT_SECRET,
       { expiresIn: '1h' } // Token expires in 1 hour
@@ -300,7 +305,7 @@ router.post('/reset-password', async (req, res) => {
     // 1. Verify Token
     let decoded;
     try {
-      decoded = jwt.verify(token, process.env.JWT_SECRET);
+      decoded = verify(token, process.env.JWT_SECRET);
     } catch (err) {
       return res.status(400).json({ error: 'Invalid or expired token' });
     }
@@ -323,7 +328,7 @@ router.post('/reset-password', async (req, res) => {
     }
 
     // 4. Hash New Password
-    const hashedPassword = await bcrypt.hash(newPassword, 12);
+    const hashedPassword = await hash(newPassword, 12);
 
     // 5. Update User in DB
     const { error: updateError } = await supabaseAdmin
@@ -343,4 +348,4 @@ router.post('/reset-password', async (req, res) => {
   }
 });
 
-module.exports = router;
+export default router;

@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS users (
   password_hash TEXT NOT NULL,
   name TEXT,
   business_name TEXT,
+  business_address TEXT,
+  phone TEXT,
   logo_url TEXT,
   bank_name TEXT,
   account_number TEXT,
@@ -34,7 +36,7 @@ CREATE TABLE IF NOT EXISTS clients (
 CREATE TABLE IF NOT EXISTS invoices (
   id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
   user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
-  client_id UUID REFERENCES clients(id) ON DELETE SET NULL NOT NULL,
+  client_id UUID REFERENCES clients(id) ON DELETE RESTRICT NOT NULL,
   invoice_number TEXT NOT NULL,
   subtotal NUMERIC(12, 2) DEFAULT 0,
   vat NUMERIC(12, 2) DEFAULT 0,
@@ -59,12 +61,24 @@ CREATE TABLE IF NOT EXISTS invoice_items (
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
 
+-- Tax rates table
+CREATE TABLE IF NOT EXISTS tax_rates (
+  id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+  user_id UUID REFERENCES users(id) ON DELETE CASCADE NOT NULL,
+  name TEXT NOT NULL,
+  rate NUMERIC(5, 2) NOT NULL DEFAULT 0,
+  is_default BOOLEAN DEFAULT FALSE,
+  created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
+);
+
 -- Indexes for performance
 CREATE INDEX IF NOT EXISTS idx_clients_user_id ON clients(user_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_user_id ON invoices(user_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_client_id ON invoices(client_id);
 CREATE INDEX IF NOT EXISTS idx_invoices_status ON invoices(status);
 CREATE INDEX IF NOT EXISTS idx_invoice_items_invoice_id ON invoice_items(invoice_id);
+CREATE INDEX IF NOT EXISTS idx_tax_rates_user_id ON tax_rates(user_id);
 
 -- Row Level Security (RLS) Policies
 ALTER TABLE users ENABLE ROW LEVEL SECURITY;
@@ -98,3 +112,9 @@ CREATE POLICY "Users can update own invoice items" ON invoice_items FOR UPDATE
   USING (invoice_id IN (SELECT id FROM invoices WHERE user_id = auth.uid()));
 CREATE POLICY "Users can delete own invoice items" ON invoice_items FOR DELETE 
   USING (invoice_id IN (SELECT id FROM invoices WHERE user_id = auth.uid()));
+
+-- Tax Rates: Users can only access their own tax rates
+CREATE POLICY "Users can view own tax rates" ON tax_rates FOR SELECT USING (user_id = auth.uid());
+CREATE POLICY "Users can insert own tax rates" ON tax_rates FOR INSERT WITH CHECK (user_id = auth.uid());
+CREATE POLICY "Users can update own tax rates" ON tax_rates FOR UPDATE USING (user_id = auth.uid());
+CREATE POLICY "Users can delete own tax rates" ON tax_rates FOR DELETE USING (user_id = auth.uid());
