@@ -16,7 +16,7 @@ const app = express();
 const PORT = process.env.PORT;
 
 // CORS — restrict in production
-const allowedOrigins = (process.env.FRONTEND_URL || "")
+const allowedOrigins = (process.env.FRONTEND_URL)
   .split(",")
   .map((origin) => origin.trim())
   .filter(Boolean);
