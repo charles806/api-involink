@@ -8,6 +8,7 @@ import paymentRoutes from "./routes/payments.js";
 import subscriptionRoutes from "./routes/subscriptions.js";
 import dashboardRoutes from "./routes/dashboard.js";
 import settingsRoutes from "./routes/settings.js";
+import walletRoutes from "./routes/wallet.js";
 import webhookRoutes from "./routes/webhooks.js";
 
 dotenv.config();
@@ -64,6 +65,7 @@ app.use("/api/payments", paymentRoutes);
 app.use("/api/subscriptions", subscriptionRoutes);
 app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/settings", settingsRoutes);
+app.use("/api/wallet", walletRoutes);
 
 // Health check
 app.get("/api/health", (req, res) => {

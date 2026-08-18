@@ -138,6 +138,68 @@ router.post('/paystack', raw({ type: 'application/json' }), async (req, res) => 
         break;
       }
 
+      case 'transfer.success': {
+        const transferRef = data?.reference;
+        const transferCode = data?.transfer_code;
+        if (transferRef) {
+          const { data: existingWd } = await supabaseAdmin
+            .from('withdrawals')
+            .select('status')
+            .eq('reference', transferRef)
+            .single();
+          if (existingWd?.status === 'success') {
+            console.log(`Skipping duplicate transfer webhook for ${transferRef}`);
+            break;
+          }
+          await supabaseAdmin
+            .from('withdrawals')
+            .update({
+              status: 'success',
+              transfer_code: transferCode || null,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('reference', transferRef);
+          console.log(`Withdrawal ${transferRef} marked as successful`);
+        }
+        break;
+      }
+
+      case 'transfer.failed': {
+        const transferRef = data?.reference;
+        const failures = data?.failures;
+        const failureReason = Array.isArray(failures) && failures.length > 0
+          ? failures.map((f) => f.message || f.type).join('; ')
+          : data?.gateway_response || 'Transfer failed';
+        if (transferRef) {
+          await supabaseAdmin
+            .from('withdrawals')
+            .update({
+              status: 'failed',
+              failure_reason: failureReason,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('reference', transferRef);
+          console.log(`Withdrawal ${transferRef} marked as failed: ${failureReason}`);
+        }
+        break;
+      }
+
+      case 'transfer.reversed': {
+        const transferRef = data?.reference;
+        if (transferRef) {
+          await supabaseAdmin
+            .from('withdrawals')
+            .update({
+              status: 'reversed',
+              failure_reason: 'Transfer reversed by Paystack',
+              updated_at: new Date().toISOString(),
+            })
+            .eq('reference', transferRef);
+          console.log(`Withdrawal ${transferRef} reversed`);
+        }
+        break;
+      }
+
       case 'subscription.disable': {
         const userId = data?.customer?.metadata?.user_id || data?.metadata?.user_id;
         if (userId) {
