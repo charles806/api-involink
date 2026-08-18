@@ -76,6 +76,61 @@ export async function sendSubscriptionActivated({ to, plan, interval, expiresAt 
   });
 }
 
+// Initial invoice email (to the client, with payment link).
+export async function sendInvoiceEmail({ to, clientName, businessName, invoiceNumber, amount, dueDate, paymentUrl }) {
+  return sendMail({
+    to,
+    subject: `Invoice ${invoiceNumber} from ${businessName || 'Involink'}`,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; color: #111;">
+        <h2 style="color: #059669;">You have an invoice to pay</h2>
+        <p>Hi ${clientName || ''},</p>
+        <p>${businessName || 'Your service provider'} has sent you an invoice for ${formatNaira(amount)}.</p>
+        <table style="width:100%; border-collapse: collapse; margin: 16px 0;">
+          <tr><td style="padding:8px 0; color:#555;">Invoice</td><td style="padding:8px 0; text-align:right; font-weight:600;">${invoiceNumber}</td></tr>
+          <tr><td style="padding:8px 0; color:#555;">Amount due</td><td style="padding:8px 0; text-align:right; font-weight:600;">${formatNaira(amount)}</td></tr>
+          ${dueDate ? `<tr><td style="padding:8px 0; color:#555;">Due date</td><td style="padding:8px 0; text-align:right;">${new Date(dueDate).toLocaleDateString()}</td></tr>` : ''}
+        </table>
+        ${paymentUrl ? `<p style="text-align:center; margin: 24px 0;"><a href="${paymentUrl}" style="background-color:#059669; color:#fff; padding:12px 28px; text-decoration:none; border-radius:8px; font-weight:600; display:inline-block;">Pay Now</a></p>` : ''}
+        <p style="color:#888; font-size:12px;">Questions? Just reply to this email.</p>
+      </div>
+    `,
+  });
+}
+
+// Payment reminder (to the client, with payment link).
+export async function sendInvoiceReminder({ to, clientName, businessName, invoiceNumber, amount, dueDate, paymentUrl, tone = 'friendly', daysOverdue = 0 }) {
+  const isFirm = tone === 'firm';
+  const subject = isFirm
+    ? `Reminder: Invoice ${invoiceNumber} is overdue`
+    : `Friendly reminder about invoice ${invoiceNumber}`;
+  const heading = isFirm
+    ? `Your invoice ${invoiceNumber} is ${daysOverdue > 0 ? 'overdue' : 'due'}.`
+    : `Just a gentle nudge about invoice ${invoiceNumber}.`;
+  const body = isFirm
+    ? `<p>This is the second request for payment of ${formatNaira(amount)}${daysOverdue > 0 ? `, now ${daysOverdue} day${daysOverdue === 1 ? '' : 's'} past due` : ''}. Please settle the balance at your earliest convenience to avoid disruption.</p>`
+    : `<p>We noticed invoice ${invoiceNumber} for ${formatNaira(amount)}${daysOverdue > 0 ? ` (${daysOverdue} day${daysOverdue === 1 ? '' : 's'} overdue)` : ''} is still unpaid. No stress — if you've already paid, kindly ignore this. Otherwise, you can settle it in under a minute:</p>`;
+
+  return sendMail({
+    to,
+    subject,
+    html: `
+      <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; color: #111;">
+        <h2 style="color: ${isFirm ? '#d97706' : '#059669'};">${heading}</h2>
+        <p>Hi ${clientName || ''},</p>
+        ${body}
+        <table style="width:100%; border-collapse: collapse; margin: 16px 0;">
+          <tr><td style="padding:8px 0; color:#555;">Invoice</td><td style="padding:8px 0; text-align:right; font-weight:600;">${invoiceNumber}</td></tr>
+          <tr><td style="padding:8px 0; color:#555;">Amount due</td><td style="padding:8px 0; text-align:right; font-weight:600;">${formatNaira(amount)}</td></tr>
+          ${dueDate ? `<tr><td style="padding:8px 0; color:#555;">Due date</td><td style="padding:8px 0; text-align:right;">${new Date(dueDate).toLocaleDateString()}</td></tr>` : ''}
+        </table>
+        ${paymentUrl ? `<p style="text-align:center; margin: 24px 0;"><a href="${paymentUrl}" style="background-color:${isFirm ? '#d97706' : '#059669'}; color:#fff; padding:12px 28px; text-decoration:none; border-radius:8px; font-weight:600; display:inline-block;">Pay Now</a></p>` : ''}
+        <p style="color:#888; font-size:12px;">Sent via Involink — ${businessName || 'your provider'}.</p>
+      </div>
+    `,
+  });
+}
+
 // Subscription cancelled.
 export async function sendSubscriptionCancelled({ to, plan }) {
   return sendMail({
@@ -92,4 +147,4 @@ export async function sendSubscriptionCancelled({ to, plan }) {
   });
 }
 
-export default { sendPaymentReceipt, sendSubscriptionActivated, sendSubscriptionCancelled };
+export default { sendPaymentReceipt, sendSubscriptionActivated, sendSubscriptionCancelled, sendInvoiceEmail, sendInvoiceReminder };

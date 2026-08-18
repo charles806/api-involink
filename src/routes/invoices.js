@@ -3,6 +3,7 @@ import { supabaseAdmin } from "../lib/supabase.js";
 import { authenticateToken } from "../middleware/auth.js";
 import { attachSubscription, requireInvoiceQuota } from "../middleware/featureGating.js";
 import { calculateInvoiceTotals, validateItems, nextInvoiceNumber } from '../lib/invoiceMath.js';
+import { sendInvoiceEmail, sendInvoiceReminder } from "../services/emailService.js";
 
 const router = Router();
 
@@ -371,27 +372,106 @@ router.get('/:id', async (req, res) => {
   }
 });
 
-// SEND invoice
+// SEND invoice / SEND reminder
+// draft   -> marks as sent, emails the initial invoice
+// sent/overdue -> keeps status, bumps reminder_count, emails a reminder (tone: friendly|firm)
 router.post('/:id/send', async (req, res) => {
   try {
     const { id } = req.params;
+    const tone = req.body?.tone === 'firm' ? 'firm' : 'friendly';
 
     const { data: invoice, error } = await supabaseAdmin
       .from('invoices')
-      .update({ status: 'sent', sent_at: new Date().toISOString() })
+      .select('*, clients(*)')
+      .eq('id', id)
+      .eq('user_id', req.user.userId)
+      .single();
+
+    if (error || !invoice) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    if (invoice.status === 'paid') {
+      return res.status(400).json({ error: 'Invoice is already paid', code: 'ALREADY_PAID' });
+    }
+
+    const { data: user } = await supabaseAdmin
+      .from('users')
+      .select('name, business_name')
+      .eq('id', req.user.userId)
+      .single();
+
+    const clientEmail = invoice.clients?.email;
+    const businessName = user?.business_name || user?.name || null;
+    const frontendUrl = process.env.FRONTEND_URL
+      ? process.env.FRONTEND_URL.split(',')[0].trim()
+      : 'http://localhost:5173';
+    const paymentUrl = `${frontendUrl}/pay/${id}`;
+
+    const isFirstSend = invoice.status === 'draft';
+    const isReminder = !isFirstSend;
+
+    const updateData = { updated_at: new Date().toISOString() };
+    if (isFirstSend) {
+      updateData.status = 'sent';
+      updateData.sent_at = new Date().toISOString();
+    } else {
+      updateData.reminder_count = (Number(invoice.reminder_count) || 0) + 1;
+      updateData.last_reminded_at = new Date().toISOString();
+    }
+
+    const { data: updated, error: updateErr } = await supabaseAdmin
+      .from('invoices')
+      .update(updateData)
       .eq('id', id)
       .eq('user_id', req.user.userId)
       .select('*, clients(*)')
       .single();
 
-    if (error) throw error;
+    if (updateErr) throw updateErr;
+
+    if (clientEmail) {
+      try {
+        if (isFirstSend) {
+          await sendInvoiceEmail({
+            to: clientEmail,
+            clientName: invoice.clients?.name,
+            businessName,
+            invoiceNumber: invoice.invoice_number,
+            amount: invoice.total,
+            dueDate: invoice.due_date,
+            paymentUrl,
+          });
+        } else {
+          const daysOverdue = invoice.due_date
+            ? Math.max(
+                0,
+                Math.floor((new Date().setHours(0, 0, 0, 0) - new Date(invoice.due_date).setHours(0, 0, 0, 0)) / (1000 * 60 * 60 * 24))
+              )
+            : 0;
+          await sendInvoiceReminder({
+            to: clientEmail,
+            clientName: invoice.clients?.name,
+            businessName,
+            invoiceNumber: invoice.invoice_number,
+            amount: invoice.total,
+            dueDate: invoice.due_date,
+            paymentUrl,
+            tone,
+            daysOverdue,
+          });
+        }
+      } catch (emailErr) {
+        console.error('Send invoice email error:', emailErr);
+      }
+    }
 
     const { data: items } = await supabaseAdmin
       .from('invoice_items')
       .select('*')
       .eq('invoice_id', id);
 
-    res.json({ ...invoice, items: items || [] });
+    res.json({ ...updated, items: items || [] });
   } catch (err) {
     console.error('Send invoice error:', err);
     res.status(500).json({ error: 'Failed to send invoice' });
@@ -422,6 +502,82 @@ router.post('/:id/mark-paid', async (req, res) => {
   } catch (err) {
     console.error('Mark paid error:', err);
     res.status(500).json({ error: 'Failed to mark invoice as paid' });
+  }
+});
+
+// RECORD MANUAL PAYMENT
+// Inserts a real payments row (shows up in Payment History) and marks the invoice paid.
+router.post('/:id/record-payment', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { amount, method, reference } = req.body;
+
+    const parsedAmount = Number(amount);
+    if (!Number.isFinite(parsedAmount) || parsedAmount <= 0) {
+      return res.status(400).json({ error: 'A valid payment amount is required' });
+    }
+
+    const validMethods = ['bank_transfer', 'cash', 'card', 'cheque', 'other'];
+    if (!validMethods.includes(method)) {
+      return res.status(400).json({ error: 'Invalid payment method' });
+    }
+
+    const { data: invoice, error } = await supabaseAdmin
+      .from('invoices')
+      .select('id, total, status')
+      .eq('id', id)
+      .eq('user_id', req.user.userId)
+      .single();
+
+    if (error || !invoice) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    if (invoice.status === 'paid') {
+      return res.status(400).json({ error: 'Invoice is already paid', code: 'ALREADY_PAID' });
+    }
+
+    const finalReference = (reference && reference.trim())
+      ? reference.trim()
+      : `MAN-${Date.now()}`;
+
+    const { error: insertErr } = await supabaseAdmin
+      .from('payments')
+      .insert({
+        invoice_id: id,
+        user_id: req.user.userId,
+        reference: finalReference,
+        amount: Math.round(parsedAmount * 100) / 100,
+        status: 'success',
+        channel: method,
+      });
+
+    if (insertErr) {
+      if (insertErr.code === '23505') {
+        return res.status(400).json({ error: 'That reference already exists' });
+      }
+      throw insertErr;
+    }
+
+    const { data: updated, error: invoiceErr } = await supabaseAdmin
+      .from('invoices')
+      .update({ status: 'paid', paid_at: new Date().toISOString(), updated_at: new Date().toISOString() })
+      .eq('id', id)
+      .eq('user_id', req.user.userId)
+      .select('*, clients(*)')
+      .single();
+
+    if (invoiceErr) throw invoiceErr;
+
+    const { data: items } = await supabaseAdmin
+      .from('invoice_items')
+      .select('*')
+      .eq('invoice_id', id);
+
+    res.json({ ...updated, items: items || [], payment: { reference: finalReference, amount: parsedAmount, method } });
+  } catch (err) {
+    console.error('Record payment error:', err);
+    res.status(500).json({ error: 'Failed to record payment' });
   }
 });
 

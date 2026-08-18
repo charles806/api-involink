@@ -1,3 +1,14 @@
+vi.mock('@supabase/supabase-js', async () => {
+  const { supabaseAdmin } = await import('../../../tests/helpers/supabaseMock.mjs');
+  return { createClient: () => supabaseAdmin };
+});
+
+vi.mock('nodemailer', async () => {
+  const { sendMailFn } = await import('../../../tests/helpers/nodemailerMock.mjs');
+  const createTransport = () => ({ sendMail: sendMailFn });
+  return { default: { createTransport }, createTransport };
+});
+
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import crypto from 'crypto';
@@ -47,6 +58,12 @@ describe('POST /api/webhooks/paystack', () => {
       data: { reference: 'ref-1', metadata: { invoice_id: 'inv-1' } },
     };
     const { json, hash } = signedBody(payload);
+    setResults(
+      { data: { status: 'pending' }, error: null },                              // idempotency: existing payment row
+      { data: null, error: null },                                               // payments update
+      { data: null, error: null },                                               // invoices update
+      { data: { invoice_number: 'INV-0001', total: 100, clients: { name: 'Acme', email: null } }, error: null } // email lookup
+    );
     const res = await request(app)
       .post('/api/webhooks/paystack')
       .set('Content-Type', 'application/json')
@@ -64,7 +81,7 @@ describe('POST /api/webhooks/paystack', () => {
     expect(invoiceUpdate).toEqual(expect.arrayContaining([['eq', 'id', 'inv-1']]));
   });
 
-  it('does nothing for charge.success without an invoice id in metadata', async () => {
+  it('marks the payment as success but does not touch invoices without an invoice id', async () => {
     const { json, hash } = signedBody({ event: 'charge.success', data: { reference: 'ref-9', metadata: {} } });
     const res = await request(app)
       .post('/api/webhooks/paystack')
@@ -72,6 +89,7 @@ describe('POST /api/webhooks/paystack', () => {
       .set('x-paystack-signature', hash)
       .send(json);
     expect(res.status).toBe(200);
-    expect(queriesOnTable('payments')).toHaveLength(0);
+    expect(queriesOnTable('payments').some((q) => q.some(([m]) => m === 'update'))).toBe(true);
+    expect(queriesOnTable('invoices')).toHaveLength(0);
   });
 });

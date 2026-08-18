@@ -1,7 +1,19 @@
+vi.mock('@supabase/supabase-js', async () => {
+  const { supabaseAdmin } = await import('../../../tests/helpers/supabaseMock.mjs');
+  return { createClient: () => supabaseAdmin };
+});
+
+vi.mock('nodemailer', async () => {
+  const { sendMailFn } = await import('../../../tests/helpers/nodemailerMock.mjs');
+  const createTransport = () => ({ sendMail: sendMailFn });
+  return { default: { createTransport }, createTransport };
+});
+
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
 import { setResults, queriesOnTable } from '../../../tests/helpers/supabaseMock.mjs';
+import { nodemailerState, resetNodemailer } from '../../../tests/helpers/nodemailerMock.mjs';
 
 import app from '../../index.js';
 
@@ -11,6 +23,7 @@ const validItems = [{ description: 'Consulting', quantity: 2, rate: 100, discoun
 
 beforeEach(() => {
   setResults();
+  resetNodemailer();
 });
 
 describe('authentication', () => {
@@ -114,9 +127,9 @@ describe('POST /api/invoices', () => {
 
   it('creates an invoice with server-side totals and auto-generated number', async () => {
     setResults(
+      { data: freeUser, error: null },                                           // attachSubscription
+      { count: 2, error: null },                                                 // invoice count (free user)
       { data: { id: 'cli-1' }, error: null },                                    // client exists
-      { data: freeUser, error: null },                                           // subscription
-      { count: 2, error: null },                                                 // invoice count
       { data: { invoice_number: 'INV-0007' }, error: null },                     // last invoice
       { data: { id: 'inv-1', invoice_number: 'INV-0008', status: 'draft' }, error: null }, // insert invoice
       { data: null, error: null },                                               // insert items
@@ -144,7 +157,6 @@ describe('POST /api/invoices', () => {
 
   it('returns 403 LIMIT_REACHED when a free user hits 10 invoices', async () => {
     setResults(
-      { data: { id: 'cli-1' }, error: null },
       { data: freeUser, error: null },
       { count: 10, error: null }
     );
@@ -158,8 +170,8 @@ describe('POST /api/invoices', () => {
 
   it('skips the free-plan count check for active enterprise users', async () => {
     setResults(
-      { data: { id: 'cli-1' }, error: null },
       { data: { subscription_plan: 'enterprise', subscription_expires_at: '2099-01-01' }, error: null },
+      { data: { id: 'cli-1' }, error: null },
       { data: { id: 'inv-1', invoice_number: 'INV-0009', status: 'draft' }, error: null },
       { data: null, error: null },
       { data: [], error: null }
@@ -247,16 +259,127 @@ describe('DELETE /api/invoices/:id', () => {
 });
 
 describe('POST /api/invoices/:id/send', () => {
-  it('marks the invoice as sent', async () => {
+  const baseInvoice = (overrides = {}) => ({
+    id: 'inv-1',
+    invoice_number: 'INV-0001',
+    status: 'draft',
+    total: 193.5,
+    due_date: '2024-06-01',
+    reminder_count: 0,
+    last_reminded_at: null,
+    clients: { name: 'Acme', email: 'client@acme.com' },
+    ...overrides,
+  });
+
+  const sendFlow = (invoice, user = { name: 'Bob', business_name: 'Acme Inc' }, updated = invoice, items = []) =>
     setResults(
-      { data: { id: 'inv-1', status: 'sent', clients: {} }, error: null },
-      { data: [], error: null }
+      { data: invoice, error: null },       // invoice + clients select
+      { data: user, error: null },          // business owner user select
+      { data: updated, error: null },       // update result
+      { data: items, error: null }          // items select
     );
+
+  it('sends the initial invoice email and marks a draft as sent', async () => {
+    const draft = baseInvoice();
+    const sent = { ...draft, status: 'sent', sent_at: '2024-03-01T10:00:00Z' };
+    sendFlow(draft, undefined, sent);
+
     const res = await request(app).post('/api/invoices/inv-1/send').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('sent');
-    const update = queriesOnTable('invoices')[0];
-    expect(update.some(([m]) => m === 'update')).toBe(true);
+    expect(res.body.items).toEqual([]);
+
+    const update = queriesOnTable('invoices').find((q) => q.some(([m]) => m === 'update'));
+    const payload = update.find(([m]) => m === 'update')[1];
+    expect(payload.status).toBe('sent');
+    expect(payload.sent_at).toBeDefined();
+    expect(payload.reminder_count).toBeUndefined();
+
+    expect(nodemailerState.calls).toHaveLength(1);
+    const mail = nodemailerState.calls[0];
+    expect(mail.to).toBe('client@acme.com');
+    expect(mail.subject).toContain('INV-0001');
+    expect(mail.html).toContain('Pay Now');
+    expect(mail.html).toContain('/pay/inv-1');
+  });
+
+  it('bumps reminder_count and emails a friendly reminder for sent invoices', async () => {
+    const sent = baseInvoice({ status: 'sent', sent_at: '2024-02-01T10:00:00Z' });
+    const reminded = { ...sent, reminder_count: 1, last_reminded_at: '2024-03-01T10:00:00Z' };
+    sendFlow(sent, undefined, reminded);
+
+    const res = await request(app).post('/api/invoices/inv-1/send').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+
+    const update = queriesOnTable('invoices').find((q) => q.some(([m]) => m === 'update'));
+    const payload = update.find(([m]) => m === 'update')[1];
+    expect(payload.reminder_count).toBe(1);
+    expect(payload.last_reminded_at).toBeDefined();
+    expect(payload.status).toBeUndefined();
+
+    expect(nodemailerState.calls).toHaveLength(1);
+    expect(nodemailerState.calls[0].subject).toContain('Friendly reminder');
+  });
+
+  it('emails a firm overdue reminder when tone is firm', async () => {
+    const sent = baseInvoice({ status: 'sent', sent_at: '2024-02-01T10:00:00Z' });
+    const reminded = { ...sent, reminder_count: 1, last_reminded_at: '2024-03-01T10:00:00Z' };
+    setResults(
+      { data: sent, error: null },
+      { data: null, error: null },
+      { data: reminded, error: null },
+      { data: [], error: null }
+    );
+
+    const res = await request(app)
+      .post('/api/invoices/inv-1/send')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ tone: 'firm' });
+    expect(res.status).toBe(200);
+
+    const mail = nodemailerState.calls[0];
+    expect(mail.subject).toContain('overdue');
+    expect(mail.html).toContain('second request');
+  });
+
+  it('does not change the status of overdue invoices when reminded', async () => {
+    const overdue = baseInvoice({ status: 'overdue', sent_at: '2024-02-01T10:00:00Z' });
+    const reminded = { ...overdue, reminder_count: 1, last_reminded_at: '2024-03-01T10:00:00Z' };
+    sendFlow(overdue, undefined, reminded);
+
+    const res = await request(app).post('/api/invoices/inv-1/send').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('overdue');
+    const update = queriesOnTable('invoices').find((q) => q.some(([m]) => m === 'update'));
+    const payload = update.find(([m]) => m === 'update')[1];
+    expect(payload.status).toBeUndefined();
+    expect(payload.reminder_count).toBe(1);
+  });
+
+  it('returns 400 ALREADY_PAID for paid invoices', async () => {
+    setResults({ data: baseInvoice({ status: 'paid' }), error: null });
+    const res = await request(app).post('/api/invoices/inv-1/send').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('ALREADY_PAID');
+    expect(nodemailerState.calls).toHaveLength(0);
+  });
+
+  it('returns 404 for a foreign/nonexistent invoice', async () => {
+    setResults({ data: null, error: { code: 'PGRST116', message: 'not found' } });
+    const res = await request(app).post('/api/invoices/foreign/send').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(404);
+    expect(nodemailerState.calls).toHaveLength(0);
+  });
+
+  it('still marks as sent when the client has no email on file', async () => {
+    const draft = baseInvoice({ clients: { name: 'Acme', email: null } });
+    const sent = { ...draft, status: 'sent', sent_at: '2024-03-01T10:00:00Z' };
+    sendFlow(draft, undefined, sent);
+
+    const res = await request(app).post('/api/invoices/inv-1/send').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('sent');
+    expect(nodemailerState.calls).toHaveLength(0);
   });
 });
 
@@ -269,6 +392,67 @@ describe('POST /api/invoices/:id/mark-paid', () => {
     const res = await request(app).post('/api/invoices/inv-1/mark-paid').set('Authorization', `Bearer ${token}`);
     expect(res.status).toBe(200);
     expect(res.body.status).toBe('paid');
+  });
+});
+
+describe('POST /api/invoices/:id/record-payment', () => {
+  it('records a manual payment row and marks the invoice paid', async () => {
+    setResults(
+      { data: { id: 'inv-1', total: 193.5, status: 'sent' }, error: null },     // invoice
+      { data: null, error: null },                                               // payments insert
+      { data: { id: 'inv-1', status: 'paid', clients: {} }, error: null },       // invoice update
+      { data: [], error: null }                                                  // items
+    );
+    const res = await request(app)
+      .post('/api/invoices/inv-1/record-payment')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ amount: '193.5', method: 'bank_transfer', reference: 'TRF-123' });
+    expect(res.status).toBe(200);
+    expect(res.body.status).toBe('paid');
+    expect(res.body.payment.reference).toBe('TRF-123');
+
+    const paymentInsert = queriesOnTable('payments').find((q) => q.some(([m]) => m === 'insert'));
+    const payload = paymentInsert.find(([m]) => m === 'insert')[1];
+    expect(payload.user_id).toBe('user-1');
+    expect(payload.status).toBe('success');
+    expect(payload.channel).toBe('bank_transfer');
+    expect(payload.amount).toBe(193.5);
+  });
+
+  it('generates a reference when none is provided', async () => {
+    setResults(
+      { data: { id: 'inv-1', total: 100, status: 'overdue' }, error: null },
+      { data: null, error: null },
+      { data: { id: 'inv-1', status: 'paid', clients: {} }, error: null },
+      { data: [], error: null }
+    );
+    const res = await request(app)
+      .post('/api/invoices/inv-1/record-payment')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ amount: 100, method: 'cash' });
+    expect(res.status).toBe(200);
+    const paymentInsert = queriesOnTable('payments').find((q) => q.some(([m]) => m === 'insert'));
+    const payload = paymentInsert.find(([m]) => m === 'insert')[1];
+    expect(payload.reference).toMatch(/^MAN-\d+$/);
+    expect(payload.channel).toBe('cash');
+  });
+
+  it('rejects invalid amounts and methods', async () => {
+    const res = await request(app)
+      .post('/api/invoices/inv-1/record-payment')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ amount: -5, method: 'crypto' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 ALREADY_PAID for paid invoices', async () => {
+    setResults({ data: { id: 'inv-1', status: 'paid' }, error: null });
+    const res = await request(app)
+      .post('/api/invoices/inv-1/record-payment')
+      .set('Authorization', `Bearer ${token}`)
+      .send({ amount: 50, method: 'cash' });
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe('ALREADY_PAID');
   });
 });
 

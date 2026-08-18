@@ -1,3 +1,8 @@
+vi.mock('@supabase/supabase-js', async () => {
+  const { supabaseAdmin } = await import('../../../tests/helpers/supabaseMock.mjs');
+  return { createClient: () => supabaseAdmin };
+});
+
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';

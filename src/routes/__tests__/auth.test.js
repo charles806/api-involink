@@ -1,3 +1,14 @@
+vi.mock('@supabase/supabase-js', async () => {
+  const { supabaseAdmin } = await import('../../../tests/helpers/supabaseMock.mjs');
+  return { createClient: () => supabaseAdmin };
+});
+
+vi.mock('nodemailer', async () => {
+  const { sendMailFn } = await import('../../../tests/helpers/nodemailerMock.mjs');
+  const createTransport = () => ({ sendMail: sendMailFn });
+  return { default: { createTransport }, createTransport };
+});
+
 import { describe, it, expect, beforeEach } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';

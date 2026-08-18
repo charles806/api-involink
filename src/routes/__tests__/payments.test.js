@@ -1,3 +1,14 @@
+vi.mock('@supabase/supabase-js', async () => {
+  const { supabaseAdmin } = await import('../../../tests/helpers/supabaseMock.mjs');
+  return { createClient: () => supabaseAdmin };
+});
+
+vi.mock('nodemailer', async () => {
+  const { sendMailFn } = await import('../../../tests/helpers/nodemailerMock.mjs');
+  const createTransport = () => ({ sendMail: sendMailFn });
+  return { default: { createTransport }, createTransport };
+});
+
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import request from 'supertest';
 import jwt from 'jsonwebtoken';
@@ -106,7 +117,7 @@ describe('POST /api/payments/subscribe', () => {
       .send({ plan: 'yearly', email: 'a@b.com' });
     expect(res.status).toBe(200);
     const body = fetch.mock.calls[0][1];
-    expect(JSON.parse(body.body).amount).toBe(27840 * 100);
+    expect(JSON.parse(body.body).amount).toBe(95990 * 100);
   });
 
   it('charges monthly amount in kobo for a monthly subscription', async () => {
@@ -117,7 +128,7 @@ describe('POST /api/payments/subscribe', () => {
       .send({ plan: 'monthly', email: 'a@b.com' });
     expect(res.status).toBe(200);
     const body = fetch.mock.calls[0][1];
-    expect(JSON.parse(body.body).amount).toBe(2900 * 100);
+    expect(JSON.parse(body.body).amount).toBe(9999 * 100);
   });
 });
 
@@ -150,7 +161,7 @@ describe('GET /api/payments/verify/:reference', () => {
 });
 
 describe('GET /api/payments/verify-subscription/:reference', () => {
-  it('upgrades the user to enterprise on a successful subscription', async () => {
+  it('upgrades the user to pro on a successful subscription', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => successPayload));
     const res = await request(app)
       .get('/api/payments/verify-subscription/ref-1')
@@ -159,7 +170,7 @@ describe('GET /api/payments/verify-subscription/:reference', () => {
     expect(res.body.success).toBe(true);
     const userUpdate = queriesOnTable('users').find((q) => q.some(([m]) => m === 'update'));
     const payload = userUpdate.find(([m]) => m === 'update')[1];
-    expect(payload.subscription_plan).toBe('enterprise');
+    expect(payload.subscription_plan).toBe('pro');
     expect(payload.subscription_status).toBe('active');
   });
 });

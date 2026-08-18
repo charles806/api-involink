@@ -7,7 +7,8 @@ export const FREE_QUOTA = 10;
 // Whether a user record represents an active paid (Pro) subscription.
 export function isPro(userRecord) {
   if (!userRecord) return false;
-  if (userRecord.subscription_plan !== 'pro') return false;
+  const paidPlans = ['pro', 'enterprise'];
+  if (!paidPlans.includes(userRecord.subscription_plan)) return false;
   if (!userRecord.subscription_expires_at) return true;
   return new Date(userRecord.subscription_expires_at) > new Date();
 }
