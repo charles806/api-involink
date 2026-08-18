@@ -5,6 +5,8 @@ import authRoutes from "./routes/auth.js";
 import clientRoutes from "./routes/clients.js";
 import invoiceRoutes from "./routes/invoices.js";
 import paymentRoutes from "./routes/payments.js";
+import subscriptionRoutes from "./routes/subscriptions.js";
+import dashboardRoutes from "./routes/dashboard.js";
 import settingsRoutes from "./routes/settings.js";
 import webhookRoutes from "./routes/webhooks.js";
 
@@ -59,6 +61,8 @@ app.use("/api/auth", authRoutes);
 app.use("/api/clients", clientRoutes);
 app.use("/api/invoices", invoiceRoutes);
 app.use("/api/payments", paymentRoutes);
+app.use("/api/subscriptions", subscriptionRoutes);
+app.use("/api/dashboard", dashboardRoutes);
 app.use("/api/settings", settingsRoutes);
 
 // Health check

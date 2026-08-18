@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { supabaseAdmin } from "../lib/supabase.js";
 import { authenticateToken } from "../middleware/auth.js";
+import { attachSubscription, requireInvoiceQuota } from "../middleware/featureGating.js";
 import { calculateInvoiceTotals, validateItems, nextInvoiceNumber } from '../lib/invoiceMath.js';
 
 const router = Router();
@@ -133,7 +134,7 @@ router.get('/', async (req, res) => {
 });
 
 // CREATE invoice
-router.post('/', async (req, res) => {
+router.post('/', attachSubscription, requireInvoiceQuota, async (req, res) => {
   try {
     const { client_id, issue_date, due_date, items, notes, vat_enabled, tax_rate, invoice_number } = req.body;
 
@@ -156,40 +157,6 @@ router.post('/', async (req, res) => {
 
     if (!clientExists) {
       return res.status(400).json({ error: 'Invalid client' });
-    }
-
-    // CHECK SUBSCRIPTION LIMITS
-    const { data: userRecord } = await supabaseAdmin
-      .from('users')
-      .select('subscription_plan, subscription_expires_at')
-      .eq('id', req.user.userId)
-      .single();
-
-    let isFree = true;
-    if (userRecord && userRecord.subscription_plan === 'enterprise') {
-      if (!userRecord.subscription_expires_at || new Date(userRecord.subscription_expires_at) > new Date()) {
-        isFree = false;
-      }
-    }
-
-    if (isFree) {
-      // Check invoice count
-      const { count, error: countError } = await supabaseAdmin
-        .from('invoices')
-        .select('*', { count: 'exact', head: true })
-        .eq('user_id', req.user.userId);
-
-      if (countError) {
-        console.error('Count error:', countError);
-        return res.status(500).json({ error: 'Failed to verify account limits' });
-      }
-
-      if (count >= 10) {
-        return res.status(403).json({ 
-          error: 'Free plan limit reached. Please upgrade to Enterprise.',
-          code: 'LIMIT_REACHED'
-        });
-      }
     }
 
     // Generate invoice number if not provided

@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { supabaseAdmin } from "../lib/supabase.js";
 import { authenticateToken } from "../middleware/auth.js";
+import { sendSubscriptionActivated } from "../services/emailService.js";
 
 const router = Router();
 
@@ -46,6 +47,7 @@ router.post("/initialize", async (req, res) => {
         body: JSON.stringify({
           email,
           amount: amountInKobo,
+          callback_url: `${process.env.FRONTEND_URL}/pay/${invoiceId}`,
           metadata: {
             invoice_id: invoiceId,
             user_id: req.user.userId,
@@ -176,7 +178,7 @@ router.post("/subscribe", async (req, res) => {
       return res.status(400).json({ error: "Email is required" });
     }
 
-    const amountInKobo = plan === "yearly" ? 27840 * 100 : 2900 * 100;
+    const amountInKobo = plan === "yearly" ? 95990 * 100 : 9999 * 100;
 
     // Call Paystack API
     const paystackResponse = await fetch(
@@ -190,9 +192,10 @@ router.post("/subscribe", async (req, res) => {
         body: JSON.stringify({
           email,
           amount: amountInKobo,
+          callback_url: `${process.env.FRONTEND_URL}/verify-subscription`,
           metadata: {
             user_id: req.user.userId,
-            subscription_plan: "enterprise",
+            subscription_plan: "pro",
             subscription_interval: plan, // 'monthly' or 'yearly'
             type: "subscription_upgrade",
           },
@@ -258,9 +261,13 @@ router.get("/verify-subscription/:reference", async (req, res) => {
     const isSuccessful = paystackData.data.status === "success";
 
     if (isSuccessful) {
-      const metadata = paystackData.data.metadata;
+      const metadata = paystackData.data.metadata || {};
+      const isSubscription =
+        metadata.type?.startsWith("subscription") ||
+        metadata.subscription_plan === "pro" ||
+        metadata.subscription_interval;
 
-      if (metadata && metadata.type === "subscription_upgrade") {
+      if (isSubscription) {
         // Update payment record
         await supabaseAdmin
           .from("payments")
@@ -272,23 +279,42 @@ router.get("/verify-subscription/:reference", async (req, res) => {
           .eq("reference", reference);
 
         // Calculate new expiration date
+        const interval = metadata.subscription_interval === "yearly" ? "yearly" : "monthly";
         const expiresAt = new Date();
-        if (metadata.subscription_interval === "yearly") {
+        if (interval === "yearly") {
           expiresAt.setFullYear(expiresAt.getFullYear() + 1);
         } else {
           expiresAt.setMonth(expiresAt.getMonth() + 1);
         }
 
-        // Update user to enterprise
-        await supabaseAdmin
+        const targetUserId = metadata.user_id || req.user.userId;
+
+        // Update user to pro
+        const { error: userUpdateError } = await supabaseAdmin
           .from("users")
           .update({
-            subscription_plan: "enterprise",
+            subscription_plan: "pro",
             subscription_status: "active",
             subscription_expires_at: expiresAt.toISOString(),
             updated_at: new Date().toISOString(),
           })
-          .eq("id", req.user.userId);
+          .eq("id", targetUserId);
+
+        if (userUpdateError) {
+          console.error("Subscription activation DB error:", userUpdateError);
+        } else {
+          console.log(`Subscription activated for user ${targetUserId} (${interval})`);
+        }
+
+        // Fire-and-forget activation email
+        const { data: user } = await supabaseAdmin.from("users").select("email").eq("id", targetUserId).single();
+        if (user?.email) {
+          try {
+            await sendSubscriptionActivated({ to: user.email, plan: "Pro", interval, expiresAt: expiresAt.toISOString() });
+          } catch (e) {
+            console.error("Subscription activation email error:", e);
+          }
+        }
       }
     } else {
       // Update payment record as failed
@@ -309,6 +335,49 @@ router.get("/verify-subscription/:reference", async (req, res) => {
   } catch (err) {
     console.error("Subscription verification error:", err);
     res.status(500).json({ error: "Failed to verify subscription payment" });
+  }
+});
+
+// --- Payment History ---
+
+router.get("/history", async (req, res) => {
+  try {
+    const { status, from_date, to_date, invoice, page = 1, limit = 20 } = req.query;
+
+    let query = supabaseAdmin
+      .from("payments")
+      .select("id, invoice_id, reference, amount, currency, status, channel, created_at, invoices(invoice_number)", { count: "exact" })
+      .eq("user_id", req.user.userId);
+
+    // Exclude subscription billing records (no invoice_id) when a filter targets invoices.
+    if (status) query = query.eq("status", status);
+    if (from_date) query = query.gte("created_at", from_date);
+    if (to_date) query = query.lte("created_at", to_date);
+    if (invoice) query = query.ilike("invoices.invoice_number", `%${invoice}%`);
+
+    const pageNum = Math.max(1, parseInt(page, 10) || 1);
+    const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
+    const { data, error, count } = await query
+      .order("created_at", { ascending: false })
+      .range((pageNum - 1) * limitNum, pageNum * limitNum - 1);
+
+    if (error) throw error;
+
+    // Shallow-clone selector workaround: Supabase returns nested invoices as { invoices: {...} }.
+    const rows = (data || []).map((row) => ({
+      ...row,
+      invoice_number: row.invoices?.invoice_number || null,
+    }));
+
+    res.json({
+      payments: rows,
+      total: count || 0,
+      page: pageNum,
+      limit: limitNum,
+    });
+  } catch (err) {
+    console.error("Payment history error:", err);
+    res.status(500).json({ error: "Failed to fetch payment history" });
   }
 });
 
