@@ -28,6 +28,9 @@ CREATE TABLE IF NOT EXISTS clients (
   email TEXT,
   phone TEXT,
   address TEXT,
+  bank_name TEXT,
+  account_number TEXT,
+  account_name TEXT,
   created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
   updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );

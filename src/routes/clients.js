@@ -32,7 +32,7 @@ router.get('/', async (req, res) => {
 
 router.post('/', async (req, res) => {
   try {
-    const { name, email, phone, address } = req.body;
+    const { name, email, phone, address, bank_name, account_number, account_name } = req.body;
 
     if (!name || typeof name !== 'string' || !name.trim()) {
       return res.status(400).json({ error: 'Client name is required' });
@@ -46,6 +46,13 @@ router.post('/', async (req, res) => {
       }
     }
 
+    // Validate account number if provided
+    if (account_number && typeof account_number === 'string' && account_number.trim()) {
+      if (!/^\d{10,}$/.test(account_number.trim())) {
+        return res.status(400).json({ error: 'Account number must contain at least 10 digits' });
+      }
+    }
+
     const { data, error } = await supabaseAdmin
       .from('clients')
       .insert({
@@ -54,6 +61,9 @@ router.post('/', async (req, res) => {
         email: email ? email.trim() : null,
         phone: phone ? phone.trim() : null,
         address: address ? address.trim() : null,
+        bank_name: bank_name ? bank_name.trim() : null,
+        account_number: account_number ? account_number.trim() : null,
+        account_name: account_name ? account_name.trim() : null,
         created_at: new Date().toISOString()
       })
       .select()
@@ -70,7 +80,7 @@ router.post('/', async (req, res) => {
 router.put('/:id', async (req, res) => {
   try {
     const { id } = req.params;
-    const { name, email, phone, address } = req.body;
+    const { name, email, phone, address, bank_name, account_number, account_name } = req.body;
 
     if (name !== undefined && (!name || !name.trim())) {
       return res.status(400).json({ error: 'Client name cannot be empty' });
@@ -83,11 +93,20 @@ router.put('/:id', async (req, res) => {
       }
     }
 
+    if (account_number && typeof account_number === 'string' && account_number.trim()) {
+      if (!/^\d{10,}$/.test(account_number.trim())) {
+        return res.status(400).json({ error: 'Account number must contain at least 10 digits' });
+      }
+    }
+
     const updateData = {};
     if (name !== undefined) updateData.name = name.trim();
     if (email !== undefined) updateData.email = email ? email.trim() : null;
     if (phone !== undefined) updateData.phone = phone ? phone.trim() : null;
     if (address !== undefined) updateData.address = address ? address.trim() : null;
+    if (bank_name !== undefined) updateData.bank_name = bank_name ? bank_name.trim() : null;
+    if (account_number !== undefined) updateData.account_number = account_number ? account_number.trim() : null;
+    if (account_name !== undefined) updateData.account_name = account_name ? account_name.trim() : null;
     updateData.updated_at = new Date().toISOString();
 
     const { data, error } = await supabaseAdmin

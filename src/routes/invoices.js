@@ -16,7 +16,7 @@ router.get('/:id/public', async (req, res) => {
 
     const { data: invoice, error } = await supabaseAdmin
       .from('invoices')
-      .select('id, invoice_number, subtotal, vat, total, status, due_date, issue_date, vat_enabled, clients(name, email, phone)')
+      .select('id, invoice_number, subtotal, vat, total, status, due_date, issue_date, vat_enabled, clients(name, email, phone, bank_name, account_number, account_name)')
       .eq('id', id)
       .single();
 
