@@ -140,6 +140,7 @@ router.post('/login', async (req, res) => {
         email: user.email,
         name: user.name,
         business_name: user.business_name || null,
+        role: user.role || 'user',
         subscription_plan: user.subscription_plan || 'free',
         subscription_status: user.subscription_status || 'active',
         subscription_expires_at: user.subscription_expires_at || null,
@@ -165,7 +166,7 @@ router.get('/me', async (req, res) => {
 
     const { data: user, error } = await supabaseAdmin
       .from('users')
-      .select('id, email, name, business_name, business_address, phone, bank_name, account_number, account_name, logo_url, subscription_plan, subscription_status, subscription_expires_at')
+      .select('id, email, name, business_name, business_address, phone, bank_name, account_number, account_name, logo_url, role, subscription_plan, subscription_status, subscription_expires_at')
       .eq('id', decoded.userId)
       .single();
 

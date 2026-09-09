@@ -275,6 +275,7 @@ describe('POST /api/invoices/:id/send', () => {
     setResults(
       { data: invoice, error: null },       // invoice + clients select
       { data: user, error: null },          // business owner user select
+      { data: items, error: null },         // invoice_items (PDF attachment)
       { data: updated, error: null },       // update result
       { data: items, error: null }          // items select
     );
@@ -327,6 +328,7 @@ describe('POST /api/invoices/:id/send', () => {
     setResults(
       { data: sent, error: null },
       { data: null, error: null },
+      { data: [], error: null },
       { data: reminded, error: null },
       { data: [], error: null }
     );
@@ -453,6 +455,27 @@ describe('POST /api/invoices/:id/record-payment', () => {
       .send({ amount: 50, method: 'cash' });
     expect(res.status).toBe(400);
     expect(res.body.code).toBe('ALREADY_PAID');
+  });
+});
+
+describe('GET /api/invoices/:id/pdf', () => {
+  it('streams a valid PDF for an owned invoice', async () => {
+    setResults(
+      { data: { id: 'inv-1', invoice_number: 'INV-0001', status: 'draft', total: 100, subtotal: 100, vat: 0, vat_enabled: false, clients: { name: 'Acme' } }, error: null }, // invoice
+      { data: [{ id: 'it-1', description: 'A', quantity: 1, rate: 100, discount: 0, unit: 'pcs' }], error: null }, // items
+      { data: { business_name: 'Acme Inc', name: 'Bob' }, error: null } // business owner
+    );
+    const res = await request(app).get('/api/invoices/inv-1/pdf').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('application/pdf');
+    expect(res.headers['content-disposition']).toContain('INV-0001.pdf');
+    expect(res.body.slice(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('returns 404 for a foreign/nonexistent invoice', async () => {
+    setResults({ data: null, error: { code: 'PGRST116', message: 'not found' } });
+    const res = await request(app).get('/api/invoices/foreign/pdf').set('Authorization', `Bearer ${token}`);
+    expect(res.status).toBe(404);
   });
 });
 

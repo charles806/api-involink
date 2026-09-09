@@ -18,7 +18,7 @@ function getTransporter() {
   return transporter;
 }
 
-async function sendMail({ to, subject, html, text }) {
+async function sendMail({ to, subject, html, text, attachments }) {
   const t = getTransporter();
   if (!t) return { skipped: true };
   return t.sendMail({
@@ -27,6 +27,7 @@ async function sendMail({ to, subject, html, text }) {
     subject,
     html,
     text: text || html.replace(/<[^>]*>/g, ' '),
+    attachments,
   });
 }
 
@@ -77,10 +78,11 @@ export async function sendSubscriptionActivated({ to, plan, interval, expiresAt 
 }
 
 // Initial invoice email (to the client, with payment link).
-export async function sendInvoiceEmail({ to, clientName, businessName, invoiceNumber, amount, dueDate, paymentUrl }) {
+export async function sendInvoiceEmail({ to, clientName, businessName, invoiceNumber, amount, dueDate, paymentUrl, attachments }) {
   return sendMail({
     to,
     subject: `Invoice ${invoiceNumber} from ${businessName || 'Involink'}`,
+    attachments,
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; color: #111;">
         <h2 style="color: #059669;">You have an invoice to pay</h2>
@@ -99,7 +101,7 @@ export async function sendInvoiceEmail({ to, clientName, businessName, invoiceNu
 }
 
 // Payment reminder (to the client, with payment link).
-export async function sendInvoiceReminder({ to, clientName, businessName, invoiceNumber, amount, dueDate, paymentUrl, tone = 'friendly', daysOverdue = 0 }) {
+export async function sendInvoiceReminder({ to, clientName, businessName, invoiceNumber, amount, dueDate, paymentUrl, tone = 'friendly', daysOverdue = 0, attachments }) {
   const isFirm = tone === 'firm';
   const subject = isFirm
     ? `Reminder: Invoice ${invoiceNumber} is overdue`
@@ -114,6 +116,7 @@ export async function sendInvoiceReminder({ to, clientName, businessName, invoic
   return sendMail({
     to,
     subject,
+    attachments,
     html: `
       <div style="font-family: Arial, sans-serif; max-width: 480px; margin: 0 auto; color: #111;">
         <h2 style="color: ${isFirm ? '#d97706' : '#059669'};">${heading}</h2>

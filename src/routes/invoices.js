@@ -4,6 +4,7 @@ import { authenticateToken } from "../middleware/auth.js";
 import { attachSubscription, requireInvoiceQuota } from "../middleware/featureGating.js";
 import { calculateInvoiceTotals, validateItems, nextInvoiceNumber } from '../lib/invoiceMath.js';
 import { sendInvoiceEmail, sendInvoiceReminder } from "../services/emailService.js";
+import { buildInvoicePdf } from '../services/pdfService.js';
 
 const router = Router();
 
@@ -44,7 +45,7 @@ router.get('/:id/public', async (req, res) => {
     if (invoiceFull) {
       const { data: user } = await supabaseAdmin
         .from('users')
-        .select('name, business_name, bank_name, account_number, account_name')
+        .select('name, business_name, business_address, phone, bank_name, account_number, account_name')
         .eq('id', invoiceFull.user_id)
         .single();
       businessInfo = user;
@@ -333,6 +334,67 @@ router.delete('/:id', async (req, res) => {
 });
 
 // GET single invoice (authenticated)
+router.get('/:id/pdf', async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const { data: invoice, error } = await supabaseAdmin
+      .from('invoices')
+      .select('*, clients(*)')
+      .eq('id', id)
+      .eq('user_id', req.user.userId)
+      .single();
+
+    if (error || !invoice) {
+      return res.status(404).json({ error: 'Invoice not found' });
+    }
+
+    const { data: items } = await supabaseAdmin
+      .from('invoice_items')
+      .select('*')
+      .eq('invoice_id', id);
+
+    const { data: user } = await supabaseAdmin
+      .from('users')
+      .select('name, business_name, business_address, phone')
+      .eq('id', req.user.userId)
+      .single();
+
+    let resolvedStatus = invoice.status;
+    if (invoice.status === 'sent' && invoice.due_date) {
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+      const dueDate = new Date(invoice.due_date);
+      dueDate.setHours(0, 0, 0, 0);
+      if (dueDate < today) resolvedStatus = 'overdue';
+    }
+
+    const pdf = await buildInvoicePdf({
+      invoice_number: invoice.invoice_number,
+      issue_date: invoice.issue_date,
+      due_date: invoice.due_date,
+      status: resolvedStatus,
+      items: items || [],
+      subtotal: invoice.subtotal,
+      vat: invoice.vat,
+      total: invoice.total,
+      vat_enabled: invoice.vat_enabled,
+      notes: invoice.notes,
+      clients: invoice.clients || {},
+      business: user || {},
+    });
+
+    const safeName = String(invoice.invoice_number || 'invoice').replace(/[^a-zA-Z0-9_-]+/g, '_');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeName}.pdf"`);
+    res.send(pdf);
+  } catch (err) {
+    console.error('Get invoice PDF error:', err);
+    res.status(500).json({ error: 'Failed to generate invoice PDF' });
+  }
+});
+
+// GET single invoice (authenticated)
 router.get('/:id', async (req, res) => {
   try {
     const { id } = req.params;
@@ -397,7 +459,7 @@ router.post('/:id/send', async (req, res) => {
 
     const { data: user } = await supabaseAdmin
       .from('users')
-      .select('name, business_name')
+      .select('name, business_name, business_address, phone')
       .eq('id', req.user.userId)
       .single();
 
@@ -407,6 +469,36 @@ router.post('/:id/send', async (req, res) => {
       ? process.env.FRONTEND_URL.split(',')[0].trim()
       : 'http://localhost:5173';
     const paymentUrl = `${frontendUrl}/pay/${id}`;
+
+    // Build the PDF attachment (best-effort — email still sends if this fails).
+    let pdfAttachment = null;
+    try {
+      const invoiceItems = await supabaseAdmin
+        .from('invoice_items')
+        .select('*')
+        .eq('invoice_id', id);
+      const pdf = await buildInvoicePdf({
+        invoice_number: invoice.invoice_number,
+        issue_date: invoice.issue_date,
+        due_date: invoice.due_date,
+        status: invoice.status,
+        items: invoiceItems?.data || [],
+        subtotal: invoice.subtotal,
+        vat: invoice.vat,
+        total: invoice.total,
+        vat_enabled: invoice.vat_enabled,
+        notes: invoice.notes,
+        clients: invoice.clients || {},
+        business: user || {},
+      });
+      pdfAttachment = {
+        filename: `${invoice.invoice_number}.pdf`,
+        content: pdf,
+        contentType: 'application/pdf',
+      };
+    } catch (pdfErr) {
+      console.error('PDF attachment generation error:', pdfErr);
+    }
 
     const isFirstSend = invoice.status === 'draft';
     const isReminder = !isFirstSend;
@@ -441,6 +533,7 @@ router.post('/:id/send', async (req, res) => {
             amount: invoice.total,
             dueDate: invoice.due_date,
             paymentUrl,
+            attachments: pdfAttachment ? [pdfAttachment] : undefined,
           });
         } else {
           const daysOverdue = invoice.due_date
@@ -459,6 +552,7 @@ router.post('/:id/send', async (req, res) => {
             paymentUrl,
             tone,
             daysOverdue,
+            attachments: pdfAttachment ? [pdfAttachment] : undefined,
           });
         }
       } catch (emailErr) {
